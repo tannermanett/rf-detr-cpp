@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
         pp.num_classes_with_bg  = C;
         pp.topk                 = N;
         pp.threshold            = args.threshold;
-        pp.bg_class_index       = 0;
+        pp.bg_class_index       = meta.bg_class_index;
 
         // Warm-up.
         prep.process(image, d_input, sess.stream());

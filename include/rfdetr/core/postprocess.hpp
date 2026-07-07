@@ -3,26 +3,27 @@
 #include "rfdetr/core/types.hpp"
 
 #include <cstddef>
+#include <vector>
 
 namespace rfdetr {
 
-// RF-DETR's class head emits `num_classes + 1` logits per query. The leading
-// slot (index 0) is the no-object / background class — match upstream
-// `roboflow/rf-detr` Python `PostProcess` which slices `[..., 1:]`.
+// Some RF-DETR exports include a no-object/background logit and some deployment
+// exports do not. The engine sidecar controls which raw class id is filtered as
+// background; -1 means all channels are foreground classes.
 inline constexpr int kCocoBackgroundIndex = 0;
 
 // Parameters for RF-DETR detection decoding.
 struct PostprocessParams {
-    int   num_queries{300};       // model output dim 1 (e.g. 300 for nano/small/medium/base/large)
-    int   num_classes_with_bg{91};// model output dim 2 (e.g. 91 = 90 fg + 1 bg)
-    int   topk{300};              // num_select; default = num_queries (Python reference)
+    int   num_queries{300};       // model output dim 1
+    int   num_classes_with_bg{91};// model output dim 2
+    int   topk{300};              // num_select; default = num_queries
     float threshold{0.5f};        // score threshold
-    int   bg_class_index{kCocoBackgroundIndex};  // raw class id treated as bg; -1 disables filtering
+    int   bg_class_index{kCocoBackgroundIndex};
 };
 
-// Map raw class id (0..num_classes_with_bg-1) to dense user-facing class id
-// (0..num_classes-1). Shifts down by one when background filtering is enabled,
-// so callers never see the no-object slot.
+// Map raw class id (0..num_classes_with_bg-1) to dense user-facing class id.
+// Shifts down by one when background filtering is enabled, so callers never see
+// the no-object slot.
 inline int dense_class_from_raw(int raw_class, int bg_class_index) noexcept {
     return (bg_class_index >= 0) ? (raw_class - 1) : raw_class;
 }
@@ -31,7 +32,7 @@ inline int dense_class_from_raw(int raw_class, int bg_class_index) noexcept {
 //
 // Inputs (host pointers, contiguous):
 //   dets   : (num_queries, 4) float32, cxcywh normalized to [0,1]
-//   labels : (num_queries, num_classes_with_bg) float32, raw logits (focal-style head)
+//   labels : (num_queries, num_classes_with_bg) float32, raw logits
 //
 // img_w / img_h: original-image dims for box rescaling.
 //
@@ -41,8 +42,8 @@ Detections decode_detections(const float* dets, const float* labels, int img_w,
 
 // Same as decode_detections, but also returns the query index for each kept
 // detection (parallel to the returned vector). Needed for segmentation mask
-// gathering — the upstream Python PostProcess uses `topk_boxes = topk_idx // C`
-// to gather the corresponding per-query mask.
+// gathering. Upstream RF-DETR uses `topk_boxes = topk_idx // C` to gather the
+// corresponding per-query mask.
 Detections decode_detections_with_queries(const float* dets, const float* labels,
                                            int img_w, int img_h,
                                            const PostprocessParams& params,

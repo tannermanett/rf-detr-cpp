@@ -16,6 +16,7 @@ struct EngineMeta {
     int input_w{0};
     int num_queries{0};
     int num_classes{0};
+    int bg_class_index{0};        // raw class id treated as bg; -1 disables filtering
 
     std::array<float, 3> mean{0.485f, 0.456f, 0.406f};
     std::array<float, 3> std{0.229f, 0.224f, 0.225f};

@@ -24,6 +24,7 @@ EngineMeta EngineMeta::from_json_file(const std::filesystem::path& path) {
     m.input_w     = j.value("input_w", 0);
     m.num_queries = j.value("num_queries", 0);
     m.num_classes = j.value("num_classes", 0);
+    m.bg_class_index = j.value("bg_class_index", 0);
 
     if (j.contains("mean") && j["mean"].is_array() && j["mean"].size() == 3) {
         m.mean = j["mean"].get<std::array<float, 3>>();
@@ -54,6 +55,7 @@ void EngineMeta::to_json_file(const std::filesystem::path& path) const {
         {"input_w", input_w},
         {"num_queries", num_queries},
         {"num_classes", num_classes},
+        {"bg_class_index", bg_class_index},
         {"mean", mean},
         {"std", std},
         {"color_order", color_order},

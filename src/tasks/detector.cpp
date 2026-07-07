@@ -92,7 +92,7 @@ struct RFDetrDetector::Impl {
         pp.num_classes_with_bg = C;
         pp.topk                = N;
         pp.threshold           = opts.threshold;
-        pp.bg_class_index      = 0;
+        pp.bg_class_index      = meta.bg_class_index;
 
         // Attempt CUDA Graph capture if requested.
         if (opts.use_cuda_graph) {

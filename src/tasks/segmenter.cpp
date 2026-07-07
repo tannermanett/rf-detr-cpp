@@ -126,7 +126,7 @@ struct RFDetrSegmenter::Impl {
         pp.num_classes_with_bg = C;
         pp.topk                = N;
         pp.threshold           = opts.threshold;
-        pp.bg_class_index      = 0;
+        pp.bg_class_index      = meta.bg_class_index;
 
         if (opts.use_cuda_graph) {
             if (!meta.cuda_graph_compat) {
