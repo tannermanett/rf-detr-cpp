@@ -98,6 +98,9 @@ class TrtSession {
     void bind_address_(int idx);
 
     TrtLogger                                       logger_;
+    // Outlive the TRT objects, including when construction throws.
+    gpu_budget::Reservation                         weights_budget_;
+    gpu_budget::Reservation                         context_budget_;
     std::unique_ptr<nvinfer1::IRuntime>             runtime_;
     std::unique_ptr<nvinfer1::ICudaEngine>          engine_;
     std::unique_ptr<nvinfer1::IExecutionContext>    context_;
@@ -110,6 +113,7 @@ class TrtSession {
     std::vector<int>         output_indices_;
 
     cudaStream_t stream_{nullptr};
+    bool shapes_ready_{true};
 };
 
 }  // namespace rfdetr

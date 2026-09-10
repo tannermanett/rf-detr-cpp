@@ -22,6 +22,10 @@
 
 ## Overview
 
+An optional [GPU memory budget](MEMLIMIT.md) rejects RF-DETR allocations above
+`RFDETR_GPU_MEM_LIMIT` (for example, `2G`). It caps accounted bytes; TensorRT
+weights are estimated and total process VRAM includes additional overhead.
+
 **RF-DETR C++** is a production-grade TensorRT inference engine for [RF-DETR](https://github.com/roboflow/rf-detr), Roboflow's transformer-based real-time object detection model built on a DINOv2 backbone.
 
 ```cpp

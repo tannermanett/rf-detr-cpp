@@ -59,6 +59,7 @@ add_library(rfdetr::rfdetr ALIAS rfdetr)
 target_sources(rfdetr
     PRIVATE
         src/core/log.cpp
+        src/core/gpu_budget.cpp
         src/core/variant.cpp
         src/core/engine_meta.cpp
         src/core/trt_session.cpp

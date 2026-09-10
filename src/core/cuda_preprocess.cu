@@ -123,12 +123,14 @@ void ImagePreprocessor::ensure_capacity_(std::size_t bytes) {
     // RAII reset frees the old buffers before re-allocating.
     d_src_.reset();
     h_pinned_.reset();
-    void* dp = nullptr;
-    void* hp = nullptr;
-    RFDETR_CUDA_CHECK(cudaMalloc(&dp, bytes));
-    RFDETR_CUDA_CHECK(cudaMallocHost(&hp, bytes));
-    d_src_.reset(dp);
-    h_pinned_.reset(hp);
+    // The old buffers are already gone; if either allocation below throws,
+    // capacity_ must not keep advertising them or the next call skips the
+    // regrow and hands the kernel a null pointer.
+    capacity_ = 0;
+    auto device = dev_alloc(bytes, "preprocess source image");
+    auto host = host_alloc(bytes);
+    d_src_ = std::move(device);
+    h_pinned_ = std::move(host);
     capacity_ = bytes;
 }
 

@@ -88,20 +88,14 @@ void gpu_decode_masks(const float*            h_masks_logits,
     const std::size_t mask_bytes  = static_cast<std::size_t>(num_dets) * mask_plane;
 
     // Pinned host staging
-    void* h_logits_raw = nullptr;  void* h_idx_raw   = nullptr;
-    void* h_masks_raw  = nullptr;
-    RFDETR_CUDA_CHECK(cudaMallocHost(&h_logits_raw, logit_bytes));
-    RFDETR_CUDA_CHECK(cudaMallocHost(&h_idx_raw,    idx_bytes));
-    RFDETR_CUDA_CHECK(cudaMallocHost(&h_masks_raw,  mask_bytes));
-    HostPtr h_logits(h_logits_raw), h_idx(h_idx_raw), h_masks(h_masks_raw);
+    HostPtr h_logits = host_alloc(logit_bytes);
+    HostPtr h_idx    = host_alloc(idx_bytes);
+    HostPtr h_masks  = host_alloc(mask_bytes);
 
     // Device buffers
-    void* d_logits_raw = nullptr;  void* d_idx_raw   = nullptr;
-    void* d_masks_raw  = nullptr;
-    RFDETR_CUDA_CHECK(cudaMalloc(&d_logits_raw, logit_bytes));
-    RFDETR_CUDA_CHECK(cudaMalloc(&d_idx_raw,    idx_bytes));
-    RFDETR_CUDA_CHECK(cudaMalloc(&d_masks_raw,  mask_bytes));
-    DevPtr d_logits(d_logits_raw), d_idx(d_idx_raw), d_masks(d_masks_raw);
+    DevPtr d_logits = dev_alloc(logit_bytes, "mask decode logits");
+    DevPtr d_idx    = dev_alloc(idx_bytes,   "mask decode indices");
+    DevPtr d_masks  = dev_alloc(mask_bytes,  "mask decode masks");
 
     std::memcpy(h_logits.get(), h_masks_logits, logit_bytes);
     auto* h_idx_i32 = static_cast<std::int32_t*>(h_idx.get());

@@ -2,6 +2,7 @@
 
 #include "internal/cuda_check.hpp"
 #include "internal/cuda_raii.hpp"
+#include "rfdetr/core/log.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -35,15 +36,17 @@ TrtSession::TrtSession(const std::filesystem::path& engine_path,
     : logger_(log_severity) {
     load_engine_(engine_path);
     parse_bindings_();
+    allocate_buffers_();
+    for (std::size_t i = 0; i < bindings_.size(); ++i) {
+        bind_address_(static_cast<int>(i));
+    }
+    // Create the raw stream last: a buffer-budget exception during construction
+    // must not leak a stream (the session destructor would not run).
     // Non-blocking flag: defensive hygiene. Avoids implicit sync with the
     // legacy NULL stream (stream 0) if any external library (cuBLAS without
     // cublasSetStream, cv::cuda defaults, TRT plugins) happens to enqueue
     // there. No measurable speedup in our pipeline; cosmetic correctness.
     RFDETR_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
-    allocate_buffers_();
-    for (std::size_t i = 0; i < bindings_.size(); ++i) {
-        bind_address_(static_cast<int>(i));
-    }
 }
 
 TrtSession::~TrtSession() {
@@ -73,6 +76,7 @@ TrtSession::~TrtSession() {
 }
 
 void TrtSession::load_engine_(const std::filesystem::path& path) {
+    (void)gpu_budget::limit();  // Reject malformed configuration before CUDA/TRT init.
     const auto blob = read_file(path);
     runtime_.reset(nvinfer1::createInferRuntime(logger_));
     if (!runtime_) throw std::runtime_error("rfdetr: createInferRuntime failed");
@@ -95,10 +99,29 @@ void TrtSession::load_engine_(const std::filesystem::path& path) {
         }
     }
 
+    // Plan size is a weight estimate; TRT's other internal allocations are not
+    // intercepted. This guard caps accounted bytes, not total process VRAM.
+    weights_budget_ = gpu_budget::Reservation(blob.size(), "engine weights (estimate)");
     engine_.reset(runtime_->deserializeCudaEngine(blob.data(), blob.size()));
     if (!engine_) throw std::runtime_error("rfdetr: deserializeCudaEngine failed");
+#if NV_TENSORRT_MAJOR > 10 || (NV_TENSORRT_MAJOR == 10 && NV_TENSORRT_MINOR >= 1)
+    const auto reported_bytes = engine_->getDeviceMemorySizeV2();
+    if (reported_bytes < 0) {
+        throw std::runtime_error("rfdetr: invalid execution context memory size");
+    }
+    const auto context_bytes = static_cast<std::size_t>(reported_bytes);
+#else
+    const std::size_t context_bytes = engine_->getDeviceMemorySize();
+#endif
+    context_budget_ = gpu_budget::Reservation(context_bytes, "execution context scratch");
     context_.reset(engine_->createExecutionContext());
     if (!context_) throw std::runtime_error("rfdetr: createExecutionContext failed");
+    const auto cap = gpu_budget::limit();
+    log_message(LogSeverity::kInfo,
+        "engine weights ~" + gpu_budget::human(blob.size()) +
+        ", context scratch " + gpu_budget::human(context_bytes) +
+        ", accounted GPU memory " + gpu_budget::human(gpu_budget::in_use()) + " of " +
+        (cap ? gpu_budget::human(cap) : std::string("unlimited")));
 }
 
 void TrtSession::parse_bindings_() {
@@ -131,12 +154,10 @@ void TrtSession::allocate_buffers_() {
     for (std::size_t i = 0; i < n; ++i) {
         const std::size_t bytes = bindings_[i].bytes;
         if (bytes == 0) continue;  // dynamic, deferred until set_input_shape
-        void* dp = nullptr;
-        void* hp = nullptr;
-        RFDETR_CUDA_CHECK(cudaMalloc(&dp, bytes));
-        RFDETR_CUDA_CHECK(cudaMallocHost(&hp, bytes));
-        device_buffers_[i].reset(dp);
-        host_buffers_[i].reset(hp);
+        auto device = dev_alloc(bytes, bindings_[i].name.c_str());
+        auto host = host_alloc(bytes);
+        device_buffers_[i] = std::move(device);
+        host_buffers_[i] = std::move(host);
         buffer_capacity_[i] = bytes;
     }
 }
@@ -181,14 +202,12 @@ void TrtSession::update_binding_shape_(int idx, const nvinfer1::Dims& dims) {
         host_buffers_[idx].reset();
         buffer_capacity_[idx] = 0;
         if (b.bytes > 0) {
-            void* dp = nullptr;
-            void* hp = nullptr;
-            RFDETR_CUDA_CHECK(cudaMalloc(&dp, b.bytes));
-            RFDETR_CUDA_CHECK(cudaMallocHost(&hp, b.bytes));
-            device_buffers_[idx].reset(dp);
-            host_buffers_[idx].reset(hp);
-            buffer_capacity_[idx] = b.bytes;
+            auto device = dev_alloc(b.bytes, b.name.c_str());
+            auto host = host_alloc(b.bytes);
+            device_buffers_[idx] = std::move(device);
+            host_buffers_[idx] = std::move(host);
             bind_address_(idx);
+            buffer_capacity_[idx] = b.bytes;
         }
     }
 }
@@ -211,16 +230,18 @@ void TrtSession::set_input_shape(std::string_view name, const nvinfer1::Dims& di
         for (int i = 0; i < dims.nbDims; ++i) {
             if (cur.d[i] != dims.d[i]) { same = false; break; }
         }
-        if (same) return;
+        if (same && shapes_ready_) return;
     }
     if (!context_->setInputShape(bindings_[idx].name.c_str(), dims)) {
         throw std::runtime_error("rfdetr: setInputShape rejected for: " + bindings_[idx].name);
     }
+    shapes_ready_ = false;
     // Output shapes may now be resolved differently — refresh every binding.
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
         update_binding_shape_(static_cast<int>(i),
                               context_->getTensorShape(bindings_[i].name.c_str()));
     }
+    shapes_ready_ = true;
 }
 
 void TrtSession::set_input(std::string_view name, const void* host_data, std::size_t bytes) {
@@ -248,6 +269,9 @@ void TrtSession::set_input(std::string_view name, const void* host_data, std::si
 }
 
 void TrtSession::infer() {
+    if (!shapes_ready_) {
+        throw std::runtime_error("rfdetr: retry set_input_shape after a buffer allocation failure");
+    }
     if (!context_->enqueueV3(stream_)) {
         throw std::runtime_error("rfdetr: enqueueV3 failed");
     }
