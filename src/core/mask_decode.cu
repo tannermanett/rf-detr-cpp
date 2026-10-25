@@ -70,7 +70,8 @@ void gpu_decode_masks(const float*            h_masks_logits,
                       int mH, int mW,
                       int imgH, int imgW,
                       Detections&             detections,
-                      void*                   cuda_stream) {
+                      void*                   cuda_stream,
+                      bool                    logits_on_device) {
     const int num_dets = static_cast<int>(detections.size());
     if (num_dets == 0 || !h_masks_logits) return;
 
@@ -88,23 +89,29 @@ void gpu_decode_masks(const float*            h_masks_logits,
     const std::size_t mask_bytes  = static_cast<std::size_t>(num_dets) * mask_plane;
 
     // Pinned host staging
-    HostPtr h_logits = host_alloc(logit_bytes);
+    HostPtr h_logits;
     HostPtr h_idx    = host_alloc(idx_bytes);
     HostPtr h_masks  = host_alloc(mask_bytes);
 
     // Device buffers
-    DevPtr d_logits = dev_alloc(logit_bytes, "mask decode logits");
+    DevPtr d_logits;
     DevPtr d_idx    = dev_alloc(idx_bytes,   "mask decode indices");
     DevPtr d_masks  = dev_alloc(mask_bytes,  "mask decode masks");
 
-    std::memcpy(h_logits.get(), h_masks_logits, logit_bytes);
+    const float* logits = h_masks_logits;
+    if (!logits_on_device) {
+        h_logits = host_alloc(logit_bytes);
+        d_logits = dev_alloc(logit_bytes, "mask decode logits");
+        std::memcpy(h_logits.get(), h_masks_logits, logit_bytes);
+        RFDETR_CUDA_CHECK(cudaMemcpyAsync(d_logits.get(), h_logits.get(), logit_bytes,
+                                           cudaMemcpyHostToDevice, stream));
+        logits = static_cast<const float*>(d_logits.get());
+    }
     auto* h_idx_i32 = static_cast<std::int32_t*>(h_idx.get());
     for (int i = 0; i < num_dets; ++i) {
         h_idx_i32[i] = static_cast<std::int32_t>(query_indices[static_cast<std::size_t>(i)]);
     }
 
-    RFDETR_CUDA_CHECK(cudaMemcpyAsync(d_logits.get(), h_logits.get(), logit_bytes,
-                                       cudaMemcpyHostToDevice, stream));
     RFDETR_CUDA_CHECK(cudaMemcpyAsync(d_idx.get(), h_idx.get(), idx_bytes,
                                        cudaMemcpyHostToDevice, stream));
 
@@ -114,7 +121,7 @@ void gpu_decode_masks(const float*            h_masks_logits,
                     (imgH + TY - 1) / TY,
                     static_cast<unsigned>(num_dets));
     maskDecodeKernel<<<grid, block, 0, stream>>>(
-        static_cast<const float*>(d_logits.get()),
+        logits,
         static_cast<const std::int32_t*>(d_idx.get()),
         mH, mW, imgH, imgW,
         static_cast<std::uint8_t*>(d_masks.get()));

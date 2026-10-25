@@ -25,3 +25,11 @@ target_include_directories(test_cuda_budget PRIVATE stubs
 target_compile_features(test_cuda_budget PRIVATE cxx_std_17)
 target_link_libraries(test_cuda_budget PRIVATE Threads::Threads)
 add_test(NAME cuda_budget COMMAND test_cuda_budget)
+
+if(TARGET rfdetr)
+    add_executable(test_antialias_preprocess test_antialias_preprocess.cpp)
+    target_include_directories(test_antialias_preprocess PRIVATE "${RFDETR_TEST_ROOT}/src")
+    target_compile_features(test_antialias_preprocess PRIVATE cxx_std_17)
+    target_link_libraries(test_antialias_preprocess PRIVATE rfdetr::rfdetr CUDA::cudart)
+    add_test(NAME antialias_preprocess COMMAND test_antialias_preprocess)
+endif()

@@ -19,11 +19,13 @@ namespace rfdetr {
 // imgH, imgW     : output mask resolution (original image dims)
 // detections     : detections whose `.mask` field will be populated
 // cuda_stream    : opaque cudaStream_t (void* to keep header CUDA-free)
+// logits_on_device: borrow logits directly from an FP32 engine output buffer
 void gpu_decode_masks(const float*            h_masks_logits,
                       const std::vector<int>& query_indices,
                       int mH, int mW,
                       int imgH, int imgW,
                       Detections&             detections,
-                      void*                   cuda_stream);
+                      void*                   cuda_stream,
+                      bool                    logits_on_device = false);
 
 }  // namespace rfdetr

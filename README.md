@@ -232,6 +232,15 @@ rfdetr_detections_free(res);
 rfdetr_detector_destroy(det);
 ```
 
+Segmentation uses `rfdetr_segmenter_create(engine, meta, use_cuda_graph)` and
+`rfdetr_segmenter_segment()` with the same BGR input contract. Each result
+includes a detection and a tight mask ROI (`x`, `y`, `width`, `height`, `step`,
+`data`) in original-image coordinates, with byte values 0/1. Copy retained
+pixels before calling `rfdetr_segmentations_free()`; empty masks have zero
+dimensions and a null data pointer. Destroy the handle with
+`rfdetr_segmenter_destroy()`. Segmentation through the C ABI uses antialiased
+bilinear resizing to match the Python predictor. The existing detector ABI is unchanged.
+
 ```python
 # Python via ctypes
 import ctypes
