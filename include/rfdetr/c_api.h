@@ -51,6 +51,7 @@ extern "C" {
  * Opaque handle types
  * ---------------------------------------------------------------------- */
 typedef struct rfdetr_detector_s  rfdetr_detector_t;   /* detection engine  */
+typedef struct rfdetr_segmenter_s rfdetr_segmenter_t;
 
 /* -------------------------------------------------------------------------
  * Data types
@@ -81,6 +82,20 @@ typedef struct rfdetr_detections_s {
     rfdetr_detection_t* detections;
     int                 count;
 } rfdetr_detections_t;
+
+/* Tight foreground ROI, in original-image coordinates. Pixels are 0 or 1.
+ * An empty mask has width=height=0 and data=NULL. All pointers belong to the
+ * result set and remain valid until rfdetr_segmentations_free(). */
+typedef struct rfdetr_segmentation_s {
+    rfdetr_detection_t detection;
+    int x, y, width, height, step;
+    const uint8_t* data;
+} rfdetr_segmentation_t;
+
+typedef struct rfdetr_segmentations_s {
+    rfdetr_segmentation_t* detections;
+    int count;
+} rfdetr_segmentations_t;
 
 /* -------------------------------------------------------------------------
  * Error reporting
@@ -158,6 +173,20 @@ RFDETR_API rfdetr_detections_t* rfdetr_detector_detect(rfdetr_detector_t* det,
  * Safe to call with NULL.
  */
 RFDETR_API void rfdetr_detections_free(rfdetr_detections_t* dets);
+
+/* Segmenter: same BGR input contract as the detector. use_cuda_graph is 0/1;
+ * capture is attempted only for engines marked compatible in their sidecar.
+ * Resize uses antialiased bilinear interpolation, matching RF-DETR Python. */
+RFDETR_API rfdetr_segmenter_t* rfdetr_segmenter_create(
+    const char* engine_path, const char* meta_path, int use_cuda_graph);
+RFDETR_API void rfdetr_segmenter_destroy(rfdetr_segmenter_t* seg);
+RFDETR_API int rfdetr_segmenter_input_width(const rfdetr_segmenter_t* seg);
+RFDETR_API int rfdetr_segmenter_input_height(const rfdetr_segmenter_t* seg);
+RFDETR_API int rfdetr_segmenter_cuda_graph_active(const rfdetr_segmenter_t* seg);
+RFDETR_API rfdetr_segmentations_t* rfdetr_segmenter_segment(
+    rfdetr_segmenter_t* seg, const uint8_t* bgr_data,
+    int width, int height, int step, float threshold);
+RFDETR_API void rfdetr_segmentations_free(rfdetr_segmentations_t* result);
 
 /* -------------------------------------------------------------------------
  * Version

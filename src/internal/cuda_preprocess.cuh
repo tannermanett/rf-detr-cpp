@@ -45,6 +45,7 @@ class ImagePreprocessor {
 
     void set_mean(float r, float g, float b) noexcept;
     void set_std(float r, float g, float b) noexcept;
+    void set_antialias(bool enabled) noexcept { antialias_ = enabled; }
 
     // image: HxWx3 uint8 cv::Mat. d_dst: 3*R*R floats on device.
     void process(const cv::Mat& image, float* d_dst, cudaStream_t stream);
@@ -57,6 +58,7 @@ class ImagePreprocessor {
 
     int  R_{0};
     bool src_is_bgr_{true};
+    bool antialias_{false};
     float mean_[3]{0.485f, 0.456f, 0.406f};
     float std_[3]{0.229f, 0.224f, 0.225f};
     DevPtr        d_src_;

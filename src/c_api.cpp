@@ -2,12 +2,15 @@
 
 #include "rfdetr/core/log.hpp"
 #include "rfdetr/tasks/detector.hpp"
+#include "rfdetr/tasks/segmenter.hpp"
 #include "rfdetr/version.hpp"
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <atomic>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -42,6 +45,37 @@ static void c_log_adapter(rfdetr::LogSeverity /*sev*/, const char* msg) noexcept
 struct rfdetr_detector_s {
     rfdetr::RFDetrDetector obj;
     explicit rfdetr_detector_s(rfdetr::RFDetrDetector&& d) : obj(std::move(d)) {}
+};
+
+struct rfdetr_segmenter_s {
+    rfdetr::RFDetrSegmenter obj;
+    explicit rfdetr_segmenter_s(rfdetr::RFDetrSegmenter&& s) : obj(std::move(s)) {}
+};
+
+struct SegmentationResult : rfdetr_segmentations_t {
+    std::vector<rfdetr_segmentation_t> items;
+    std::vector<cv::Mat> masks;
+
+    explicit SegmentationResult(const rfdetr::Detections& input)
+        : items(input.size()), masks(input.size()) {
+        count = static_cast<int>(items.size());
+        detections = items.data();
+        for (std::size_t i = 0; i < input.size(); ++i) {
+            const auto& d = input[i];
+            auto& item = items[i];
+            item.detection = {{d.box.x1, d.box.y1, d.box.x2, d.box.y2}, d.class_id, d.score};
+            if (d.mask.empty()) continue;
+            const cv::Rect roi = cv::boundingRect(d.mask);
+            if (roi.empty()) continue;
+            d.mask(roi).convertTo(masks[i], CV_8UC1, 1.0 / 255.0);
+            item.x = roi.x;
+            item.y = roi.y;
+            item.width = roi.width;
+            item.height = roi.height;
+            item.step = static_cast<int>(masks[i].step);
+            item.data = masks[i].data;
+        }
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -163,6 +197,59 @@ void rfdetr_detections_free(rfdetr_detections_t* dets) {
     if (!dets) return;
     delete[] dets->detections;
     delete dets;
+}
+
+rfdetr_segmenter_t* rfdetr_segmenter_create(
+    const char* engine_path, const char* meta_path, int use_cuda_graph) {
+    t_last_error.clear();
+    if (!engine_path) { set_error("rfdetr_segmenter_create: engine_path is NULL"); return nullptr; }
+    try {
+        rfdetr::SegmenterOptions options;
+        options.use_cuda_graph = use_cuda_graph != 0;
+        options.resize_antialias = true;
+        auto seg = meta_path ? rfdetr::RFDetrSegmenter(engine_path, meta_path, options)
+                             : rfdetr::RFDetrSegmenter(engine_path, options);
+        return new rfdetr_segmenter_s(std::move(seg));
+    } catch (const std::exception& e) {
+        set_error(e.what());
+    } catch (...) {
+        set_error("rfdetr_segmenter_create: unknown exception");
+    }
+    return nullptr;
+}
+
+void rfdetr_segmenter_destroy(rfdetr_segmenter_t* seg) { delete seg; }
+int rfdetr_segmenter_input_width(const rfdetr_segmenter_t* seg) {
+    return seg ? seg->obj.input_w() : 0;
+}
+int rfdetr_segmenter_input_height(const rfdetr_segmenter_t* seg) {
+    return seg ? seg->obj.input_h() : 0;
+}
+int rfdetr_segmenter_cuda_graph_active(const rfdetr_segmenter_t* seg) {
+    return seg && seg->obj.cuda_graph_active();
+}
+
+rfdetr_segmentations_t* rfdetr_segmenter_segment(
+    rfdetr_segmenter_t* seg, const uint8_t* bgr_data,
+    int width, int height, int step, float threshold) {
+    t_last_error.clear();
+    if (!seg || !bgr_data) {
+        set_error("rfdetr_segmenter_segment: NULL segmenter or image");
+        return nullptr;
+    }
+    try {
+        auto detections = seg->obj.segment(wrap_bgr(bgr_data, width, height, step), threshold);
+        return std::make_unique<SegmentationResult>(detections).release();
+    } catch (const std::exception& e) {
+        set_error(e.what());
+    } catch (...) {
+        set_error("rfdetr_segmenter_segment: unknown exception");
+    }
+    return nullptr;
+}
+
+void rfdetr_segmentations_free(rfdetr_segmentations_t* result) {
+    delete static_cast<SegmentationResult*>(result);
 }
 
 }  // extern "C"

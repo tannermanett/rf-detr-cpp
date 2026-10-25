@@ -15,6 +15,7 @@ struct SegmenterOptions {
     float threshold{0.5f};
     bool  use_cuda_graph{false};
     int   graph_warmup_iters{1};
+    bool  resize_antialias{false};
 };
 
 // Public instance-segmentation API. Hides all TRT/CUDA headers behind PIMPL.

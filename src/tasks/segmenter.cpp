@@ -7,6 +7,7 @@
 #include "../internal/cuda_check.hpp"
 #include "../internal/cuda_preprocess.cuh"
 #include "../internal/trt_session.hpp"
+#include "../internal/mask_decode.cuh"
 
 #include <NvInferRuntime.h>
 #include <cuda_runtime_api.h>
@@ -72,6 +73,7 @@ struct RFDetrSegmenter::Impl {
             meta.input_h, /*bgr_to_rgb=*/meta.color_order == "RGB");
         preprocessor->set_mean(meta.mean[0], meta.mean[1], meta.mean[2]);
         preprocessor->set_std (meta.std[0],  meta.std[1],  meta.std[2]);
+        preprocessor->set_antialias(opts.resize_antialias);
 
         b_dets   = session.find("dets");
         b_labels = session.find("labels");
@@ -118,9 +120,6 @@ struct RFDetrSegmenter::Impl {
 
         h_dets.resize(static_cast<std::size_t>(N) * 4);
         h_labels.resize(static_cast<std::size_t>(N) * static_cast<std::size_t>(C));
-        h_masks.resize(static_cast<std::size_t>(N) *
-                       static_cast<std::size_t>(mH) *
-                       static_cast<std::size_t>(mW));
 
         pp.num_queries         = N;
         pp.num_classes_with_bg = C;
@@ -163,7 +162,6 @@ struct RFDetrSegmenter::Impl {
             session.infer();
             session.get_output_f32(b_dets->name,   h_dets.data(),   h_dets.size());
             session.get_output_f32(b_labels->name, h_labels.data(), h_labels.size());
-            session.get_output_f32(b_masks->name,  h_masks.data(),  h_masks.size());
         }
 
         RFDETR_CUDA_CHECK(cudaStreamBeginCapture(session.stream(), cudaStreamCaptureModeGlobal));
@@ -173,8 +171,6 @@ struct RFDetrSegmenter::Impl {
                             h_dets.size() * sizeof(float), cudaMemcpyDeviceToHost, session.stream());
             cudaMemcpyAsync(h_labels.data(), session.device_buffer(b_labels->name),
                             h_labels.size() * sizeof(float), cudaMemcpyDeviceToHost, session.stream());
-            cudaMemcpyAsync(h_masks.data(), session.device_buffer(b_masks->name),
-                            h_masks.size() * sizeof(float), cudaMemcpyDeviceToHost, session.stream());
         }
         cudaStreamEndCapture(session.stream(), &graph);
         cudaGetLastError();
@@ -206,7 +202,6 @@ struct RFDetrSegmenter::Impl {
             session.infer();
             session.get_output_f32(b_dets->name,   h_dets.data(),   h_dets.size());
             session.get_output_f32(b_labels->name, h_labels.data(), h_labels.size());
-            session.get_output_f32(b_masks->name,  h_masks.data(),  h_masks.size());
         }
         const auto t1 = t0;  // preprocess merged into infer_ms
         const auto t2 = Clock::now();
@@ -215,8 +210,18 @@ struct RFDetrSegmenter::Impl {
         std::vector<int> query_idx;
         Detections results = decode_detections_with_queries(
             h_dets.data(), h_labels.data(), image.cols, image.rows, pp, query_idx);
-        decode_masks(h_masks.data(), mH, mW, query_idx, image.cols, image.rows, results,
-                     session.stream());
+        // Decode accepted queries directly from TRT output; downloading all
+        // logits and uploading them again is unnecessary on the native path.
+        if (b_masks->dtype == nvinfer1::DataType::kFLOAT) {
+            gpu_decode_masks(static_cast<const float*>(session.device_buffer(b_masks->name)),
+                             query_idx, mH, mW, image.rows, image.cols, results,
+                             session.stream(), true);
+        } else {
+            h_masks.resize(static_cast<std::size_t>(N) * mH * mW);
+            session.get_output_f32(b_masks->name, h_masks.data(), h_masks.size());
+            decode_masks(h_masks.data(), mH, mW, query_idx, image.cols, image.rows, results,
+                         session.stream());
+        }
         const auto t3 = Clock::now();
 
         auto ms = [](auto a, auto b) {

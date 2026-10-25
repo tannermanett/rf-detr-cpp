@@ -10,6 +10,53 @@ namespace rfdetr {
 
 namespace {
 
+// The RF-DETR Python predictor uses torchvision's antialiased float resize.
+// A widened triangle filter is required when shrinking an image; ordinary
+// bilinear sampling changes scores for small players near the threshold.
+__global__ void antialiasResizeNormalizeKernel(
+    const std::uint8_t* __restrict__ src, int src_h, int src_w, int src_pitch,
+    float* __restrict__ dst, int R, bool src_is_bgr, float3 mean, float3 std) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= R || y >= R) return;
+    const float scale_x = static_cast<float>(src_w) / R;
+    const float scale_y = static_cast<float>(src_h) / R;
+    const float support_x = fmaxf(scale_x, 1.0f);
+    const float support_y = fmaxf(scale_y, 1.0f);
+    const float center_x = scale_x * (x + 0.5f);
+    const float center_y = scale_y * (y + 0.5f);
+    const int xmin = max(static_cast<int>(center_x - support_x + 0.5f), 0);
+    const int xmax = min(static_cast<int>(center_x + support_x + 0.5f), src_w);
+    const int ymin = max(static_cast<int>(center_y - support_y + 0.5f), 0);
+    const int ymax = min(static_cast<int>(center_y + support_y + 0.5f), src_h);
+    float sum_x = 0.0f, sum_y = 0.0f;
+    for (int sx = xmin; sx < xmax; ++sx) {
+        sum_x += fmaxf(0.0f, 1.0f - fabsf((sx - center_x + 0.5f) / support_x));
+    }
+    for (int sy = ymin; sy < ymax; ++sy) {
+        sum_y += fmaxf(0.0f, 1.0f - fabsf((sy - center_y + 0.5f) / support_y));
+    }
+    float3 value{0.0f, 0.0f, 0.0f};
+    for (int sy = ymin; sy < ymax; ++sy) {
+        const float wy = fmaxf(0.0f, 1.0f - fabsf((sy - center_y + 0.5f) / support_y)) / sum_y;
+        float3 row{0.0f, 0.0f, 0.0f};
+        for (int sx = xmin; sx < xmax; ++sx) {
+            const float wx = fmaxf(0.0f, 1.0f - fabsf((sx - center_x + 0.5f) / support_x)) / sum_x;
+            const auto* pixel = src + sy * src_pitch + sx * 3;
+            row.x += (static_cast<float>(pixel[0]) / 255.0f) * wx;
+            row.y += (static_cast<float>(pixel[1]) / 255.0f) * wx;
+            row.z += (static_cast<float>(pixel[2]) / 255.0f) * wx;
+        }
+        value.x += row.x * wy;
+        value.y += row.y * wy;
+        value.z += row.z * wy;
+    }
+    const int index = y * R + x;
+    dst[index] = ((src_is_bgr ? value.z : value.x) - mean.x) / std.x;
+    dst[R * R + index] = (value.y - mean.y) / std.y;
+    dst[2 * R * R + index] = ((src_is_bgr ? value.x : value.z) - mean.z) / std.z;
+}
+
 // Fused preprocess kernel — one pass does bilinear resize, optional BGR->RGB
 // channel swap, /255 + per-channel (x - mean) / std, and HWC->CHW transpose.
 // All loop-invariants (scale factors, folded normalization constants) are
@@ -163,6 +210,15 @@ void ImagePreprocessor::process(const cv::Mat& image, float* d_dst, cudaStream_t
     RFDETR_CUDA_CHECK(cudaMemcpyAsync(d_src_raw, dst_pinned, total_bytes,
                                        cudaMemcpyHostToDevice, stream));
 
+    if (antialias_) {
+        const dim3 block(16, 16);
+        const dim3 grid((R_ + 15) / 16, (R_ + 15) / 16);
+        antialiasResizeNormalizeKernel<<<grid, block, 0, stream>>>(
+            d_src_raw, rows, cols, static_cast<int>(bytes_per_row), d_dst, R_, src_is_bgr_,
+            float3{mean_[0], mean_[1], mean_[2]}, float3{std_[0], std_[1], std_[2]});
+        RFDETR_CUDA_CHECK(cudaPeekAtLastError());
+        return;
+    }
     launch_square_resize_normalize(stream, d_src_raw, rows, cols,
                                     static_cast<int>(bytes_per_row), d_dst, R_,
                                     src_is_bgr_, mean_, std_);
