@@ -82,6 +82,7 @@ struct Args {
     int opt_batch{1};
     int max_batch{1};
     bool cuda_graph_compat{false};
+    bool disable_tf32{false};
     bool verbose{false};
 };
 
@@ -101,6 +102,7 @@ void usage(const char* argv0) {
         "\n"
         "Build:\n"
         "  --precision fp32|fp16|int8  Default: fp32.\n"
+        "  --disable-tf32             Disable TF32 tactics for strict FP32 builds.\n"
         "  --calib PATH              INT8 calibration cache (.calib) produced by\n"
         "                            trt-files/scripts/int8_calibrate.py.\n"
         "                            Required when --precision int8.\n"
@@ -134,6 +136,7 @@ Args parse_args(int argc, char** argv) {
         else if (starts_with(arg, "--opt-batch"))    a.opt_batch = parse_int(next_value(argc, argv, i, "--opt-batch"), "--opt-batch");
         else if (starts_with(arg, "--max-batch"))    a.max_batch = parse_int(next_value(argc, argv, i, "--max-batch"), "--max-batch");
         else if (arg == "--cuda-graph")              a.cuda_graph_compat = true;
+        else if (arg == "--disable-tf32")            a.disable_tf32 = true;
         else if (arg == "--verbose")                 a.verbose = true;
         else {
             throw std::runtime_error("unknown arg: " + std::string(arg));
@@ -315,6 +318,7 @@ int main(int argc, char** argv) {
 
         std::unique_ptr<nvinfer1::IBuilderConfig> config{builder->createBuilderConfig()};
         if (!config) throw std::runtime_error("createBuilderConfig failed");
+        if (args.disable_tf32) config->clearFlag(nvinfer1::BuilderFlag::kTF32);
 
         config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE,
                                    static_cast<std::size_t>(args.workspace_mib) << 20);

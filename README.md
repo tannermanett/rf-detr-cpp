@@ -309,3 +309,15 @@ See [CONTRIBUTING.md](./.github/CONTRIBUTING.md) for guidelines on setting up th
   ⭐ If RF-DETR C++ is useful to you, consider giving it a star on <a href="https://github.com/infracv/rf-detr-cpp">GitHub</a>. It helps others find the project.
 </p>
 
+# Static body12 C ABI
+
+`rfdetr_body12_create`, `rfdetr_body12_infer` and `rfdetr_body12_destroy` expose
+the static FP32 body12 engine without applying box-only postprocessing.
+Callers provide normalized RGB NCHW input `[1,3,1024,1024]` and receive raw
+`dets [1,300,4]`, `labels [1,300,2]`, `keypoints [1,300,12,8]` tensors in owned
+buffers. Each binding is checked at initialization. This lets the application
+reuse its validated pose decoder, covariance and detection ownership policy.
+Build these engines with `rfdetr_build --precision fp32 --disable-tf32`; plans
+must be built in the worker runtime on the target GPU. No mask inference runs
+through this API. Full C declarations and buffer sizes are in `c_api.h`.
+

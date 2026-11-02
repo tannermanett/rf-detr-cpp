@@ -7,6 +7,11 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 find_package(Threads REQUIRED)
+if(TARGET rfdetr_c)
+    add_executable(test_body12_c_api test_body12_c_api.cpp)
+    target_link_libraries(test_body12_c_api PRIVATE rfdetr::rfdetr_c)
+    add_test(NAME body12_c_api COMMAND test_body12_c_api)
+endif()
 set(RFDETR_TEST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 add_executable(test_gpu_budget test_gpu_budget.cpp

@@ -4,12 +4,14 @@
 #include "rfdetr/tasks/detector.hpp"
 #include "rfdetr/tasks/segmenter.hpp"
 #include "rfdetr/version.hpp"
+#include "internal/trt_session.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
 #include <atomic>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -50,6 +52,35 @@ struct rfdetr_detector_s {
 struct rfdetr_segmenter_s {
     rfdetr::RFDetrSegmenter obj;
     explicit rfdetr_segmenter_s(rfdetr::RFDetrSegmenter&& s) : obj(std::move(s)) {}
+};
+
+struct rfdetr_body12_s {
+    rfdetr::TrtSession session;
+
+    explicit rfdetr_body12_s(const char* path) : session(path) {
+        if (session.input_indices().size() != 1 || session.output_indices().size() != 3) {
+            throw std::runtime_error("body12 requires one input and three outputs");
+        }
+        require("input", {1, 3, 1024, 1024}, true);
+        require("dets", {1, 300, 4}, false);
+        require("labels", {1, 300, 2}, false);
+        require("keypoints", {1, 300, 12, 8}, false);
+    }
+
+    void require(const char* name, std::initializer_list<int> shape, bool input) {
+        const auto* binding = session.find(name);
+        if (!binding || binding->is_input != input ||
+            binding->dtype != nvinfer1::DataType::kFLOAT ||
+            binding->shape.nbDims != static_cast<int>(shape.size())) {
+            throw std::runtime_error(std::string("Invalid FP32 body12 binding: ") + name);
+        }
+        int axis = 0;
+        for (int size : shape) {
+            if (binding->shape.d[axis++] != size) {
+                throw std::runtime_error(std::string("Invalid body12 shape: ") + name);
+            }
+        }
+    }
 };
 
 struct SegmentationResult : rfdetr_segmentations_t {
@@ -134,6 +165,48 @@ void rfdetr_set_log_callback(rfdetr_log_fn_t callback) {
 
 const char* rfdetr_version(void) {
     return rfdetr::version();
+}
+
+rfdetr_body12_t* rfdetr_body12_create(const char* engine_path) {
+    t_last_error.clear();
+    try {
+        if (!engine_path) throw std::invalid_argument("body12 engine path is NULL");
+        return new rfdetr_body12_s(engine_path);
+    } catch (const std::exception& e) {
+        set_error(e.what());
+    } catch (...) {
+        set_error("Unknown body12 initialization error");
+    }
+    return nullptr;
+}
+
+void rfdetr_body12_destroy(rfdetr_body12_t* pose) {
+    delete pose;
+}
+
+int rfdetr_body12_infer(
+    rfdetr_body12_t* pose, const float* input, size_t input_count,
+    float* dets, size_t dets_count, float* labels, size_t labels_count,
+    float* keypoints, size_t keypoints_count) {
+    t_last_error.clear();
+    try {
+        if (!pose || !input || !dets || !labels || !keypoints ||
+            input_count != 3 * 1024 * 1024 || dets_count != 300 * 4 ||
+            labels_count != 300 * 2 || keypoints_count != 300 * 12 * 8) {
+            throw std::invalid_argument("Invalid body12 input/output buffers");
+        }
+        pose->session.set_input("input", input, input_count * sizeof(float));
+        pose->session.infer();
+        pose->session.get_output_f32("dets", dets, dets_count);
+        pose->session.get_output_f32("labels", labels, labels_count);
+        pose->session.get_output_f32("keypoints", keypoints, keypoints_count);
+        return 1;
+    } catch (const std::exception& e) {
+        set_error(e.what());
+    } catch (...) {
+        set_error("Unknown body12 inference error");
+    }
+    return 0;
 }
 
 // ----- Detector -----

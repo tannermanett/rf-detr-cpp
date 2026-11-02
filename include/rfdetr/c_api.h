@@ -52,6 +52,7 @@ extern "C" {
  * ---------------------------------------------------------------------- */
 typedef struct rfdetr_detector_s  rfdetr_detector_t;   /* detection engine  */
 typedef struct rfdetr_segmenter_s rfdetr_segmenter_t;
+typedef struct rfdetr_body12_s rfdetr_body12_t;
 
 /* -------------------------------------------------------------------------
  * Data types
@@ -187,6 +188,19 @@ RFDETR_API rfdetr_segmentations_t* rfdetr_segmenter_segment(
     rfdetr_segmenter_t* seg, const uint8_t* bgr_data,
     int width, int height, int step, float threshold);
 RFDETR_API void rfdetr_segmentations_free(rfdetr_segmentations_t* result);
+
+/* Static FP32 body12 engine: input [1,3,1024,1024], outputs dets [1,300,4],
+ * labels [1,300,2], keypoints [1,300,12,8]. Input is already normalized RGB
+ * NCHW; callers retain their export-specific preprocessing and pose decoder.
+ * Buffers belong to the caller. Counts are float elements, not bytes.
+ * infer returns 1 on success, 0 on failure; errors never cross the C boundary.
+ * Each handle is single-threaded, as with the other detector handles. */
+RFDETR_API rfdetr_body12_t* rfdetr_body12_create(const char* engine_path);
+RFDETR_API void rfdetr_body12_destroy(rfdetr_body12_t* pose);
+RFDETR_API int rfdetr_body12_infer(
+    rfdetr_body12_t* pose, const float* input, size_t input_count,
+    float* dets, size_t dets_count, float* labels, size_t labels_count,
+    float* keypoints, size_t keypoints_count);
 
 /* -------------------------------------------------------------------------
  * Version
