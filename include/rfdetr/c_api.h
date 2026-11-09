@@ -196,6 +196,11 @@ RFDETR_API void rfdetr_segmentations_free(rfdetr_segmentations_t* result);
  * infer returns 1 on success, 0 on failure; errors never cross the C boundary.
  * Each handle is single-threaded, as with the other detector handles. */
 RFDETR_API rfdetr_body12_t* rfdetr_body12_create(const char* engine_path);
+/* create enables graph capture on first inference. create_ex(..., 0) uses
+ * single-wait execution without capture for comparison. Unsupported capture
+ * falls back to single-wait execution. Query active after the first infer. */
+RFDETR_API rfdetr_body12_t* rfdetr_body12_create_ex(const char* engine_path, int use_cuda_graph);
+RFDETR_API int rfdetr_body12_cuda_graph_active(const rfdetr_body12_t* pose);
 RFDETR_API void rfdetr_body12_destroy(rfdetr_body12_t* pose);
 RFDETR_API int rfdetr_body12_infer(
     rfdetr_body12_t* pose, const float* input, size_t input_count,

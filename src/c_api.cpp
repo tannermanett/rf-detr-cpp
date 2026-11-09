@@ -10,6 +10,8 @@
 #include <opencv2/imgproc.hpp>
 
 #include <atomic>
+#include <array>
+#include <exception>
 #include <cstring>
 #include <initializer_list>
 #include <memory>
@@ -56,8 +58,14 @@ struct rfdetr_segmenter_s {
 
 struct rfdetr_body12_s {
     rfdetr::TrtSession session;
+    std::array<rfdetr::HostPtr, 3> outputs;
+    static constexpr const char* names[] = {"dets", "labels", "keypoints"};
+    static constexpr std::size_t counts[] = {300 * 4, 300 * 2, 300 * 12 * 8};
+    cudaGraph_t graph{nullptr};
+    cudaGraphExec_t graph_exec{nullptr};
+    bool try_graph;
 
-    explicit rfdetr_body12_s(const char* path) : session(path) {
+    explicit rfdetr_body12_s(const char* path, bool use_graph) : session(path), try_graph(use_graph) {
         if (session.input_indices().size() != 1 || session.output_indices().size() != 3) {
             throw std::runtime_error("body12 requires one input and three outputs");
         }
@@ -65,6 +73,86 @@ struct rfdetr_body12_s {
         require("dets", {1, 300, 4}, false);
         require("labels", {1, 300, 2}, false);
         require("keypoints", {1, 300, 12, 8}, false);
+        for (std::size_t i = 0; i < outputs.size(); ++i) {
+            outputs[i] = rfdetr::host_alloc(counts[i] * sizeof(float));
+        }
+    }
+
+    ~rfdetr_body12_s() {
+        // Drain outstanding copies even when an earlier enqueue/copy failed.
+        try { RFDETR_CUDA_CHECK(cudaStreamSynchronize(session.stream())); }
+        catch (const std::exception& e) { rfdetr::log_message(rfdetr::LogSeverity::kError, e.what()); }
+        destroy_graph();
+    }
+
+    void destroy_graph() noexcept {
+        try { if (graph_exec) RFDETR_CUDA_CHECK(cudaGraphExecDestroy(graph_exec)); }
+        catch (const std::exception& e) { rfdetr::log_message(rfdetr::LogSeverity::kError, e.what()); }
+        try { if (graph) RFDETR_CUDA_CHECK(cudaGraphDestroy(graph)); }
+        catch (const std::exception& e) { rfdetr::log_message(rfdetr::LogSeverity::kError, e.what()); }
+        graph_exec = nullptr;
+        graph = nullptr;
+    }
+
+    void enqueue_outputs() {
+        for (std::size_t i = 0; i < outputs.size(); ++i) {
+            RFDETR_CUDA_CHECK(cudaMemcpyAsync(outputs[i].get(), session.device_buffer(names[i]),
+                counts[i] * sizeof(float), cudaMemcpyDeviceToHost, session.stream()));
+        }
+    }
+
+    void capture_graph() {
+        try_graph = false;
+        // First execute with the real input to flush TensorRT's lazy setup.
+        RFDETR_TRT_CHECK(session.context()->enqueueV3(session.stream()));
+        enqueue_outputs();
+        RFDETR_CUDA_CHECK(cudaStreamSynchronize(session.stream()));
+        session.context()->setEnqueueEmitsProfile(false);
+        RFDETR_CUDA_CHECK(cudaStreamBeginCapture(session.stream(), cudaStreamCaptureModeThreadLocal));
+        bool enqueued = false;
+        std::exception_ptr error;
+        try {
+            enqueued = session.context()->enqueueV3(session.stream());
+            if (enqueued) enqueue_outputs();
+        } catch (...) {
+            error = std::current_exception();
+        }
+        // End capture even if enqueue/copy failed; otherwise fallback cannot run.
+        const auto ended = cudaStreamEndCapture(session.stream(), &graph);
+        if (ended != cudaSuccess && ended != cudaErrorStreamCaptureInvalidated) {
+            RFDETR_CUDA_CHECK(ended);
+        }
+        if (ended == cudaErrorStreamCaptureInvalidated) {
+            const auto last = cudaGetLastError();
+            if (last != cudaErrorStreamCaptureInvalidated && last != cudaErrorStreamCaptureUnsupported) {
+                RFDETR_CUDA_CHECK(last);
+            }
+        }
+        if (error && ended != cudaErrorStreamCaptureInvalidated) std::rethrow_exception(error);
+        if (enqueued && !error && ended == cudaSuccess && graph) {
+            RFDETR_CUDA_CHECK(cudaGraphInstantiate(&graph_exec, graph, 0));
+            rfdetr::log_message(rfdetr::LogSeverity::kInfo, "Body12 CUDA Graph active");
+        } else {
+            destroy_graph();
+            rfdetr::log_message(rfdetr::LogSeverity::kWarning,
+                               "Body12 CUDA Graph capture unavailable; using single-wait execution");
+        }
+    }
+
+    void infer(const float* input, float* dets, float* labels, float* keypoints) {
+        session.set_input("input", input, 3 * 1024 * 1024 * sizeof(float));
+        if (try_graph) capture_graph();
+        if (graph_exec) {
+            RFDETR_CUDA_CHECK(cudaGraphLaunch(graph_exec, session.stream()));
+        } else {
+            RFDETR_TRT_CHECK(session.context()->enqueueV3(session.stream()));
+            enqueue_outputs();
+        }
+        RFDETR_CUDA_CHECK(cudaStreamSynchronize(session.stream()));
+        float* destinations[] = {dets, labels, keypoints};
+        for (std::size_t i = 0; i < outputs.size(); ++i) {
+            std::memcpy(destinations[i], outputs[i].get(), counts[i] * sizeof(float));
+        }
     }
 
     void require(const char* name, std::initializer_list<int> shape, bool input) {
@@ -168,10 +256,14 @@ const char* rfdetr_version(void) {
 }
 
 rfdetr_body12_t* rfdetr_body12_create(const char* engine_path) {
+    return rfdetr_body12_create_ex(engine_path, 1);
+}
+
+rfdetr_body12_t* rfdetr_body12_create_ex(const char* engine_path, int use_cuda_graph) {
     t_last_error.clear();
     try {
         if (!engine_path) throw std::invalid_argument("body12 engine path is NULL");
-        return new rfdetr_body12_s(engine_path);
+        return new rfdetr_body12_s(engine_path, use_cuda_graph != 0);
     } catch (const std::exception& e) {
         set_error(e.what());
     } catch (...) {
@@ -182,6 +274,10 @@ rfdetr_body12_t* rfdetr_body12_create(const char* engine_path) {
 
 void rfdetr_body12_destroy(rfdetr_body12_t* pose) {
     delete pose;
+}
+
+int rfdetr_body12_cuda_graph_active(const rfdetr_body12_t* pose) {
+    return pose && pose->graph_exec ? 1 : 0;
 }
 
 int rfdetr_body12_infer(
@@ -195,11 +291,7 @@ int rfdetr_body12_infer(
             labels_count != 300 * 2 || keypoints_count != 300 * 12 * 8) {
             throw std::invalid_argument("Invalid body12 input/output buffers");
         }
-        pose->session.set_input("input", input, input_count * sizeof(float));
-        pose->session.infer();
-        pose->session.get_output_f32("dets", dets, dets_count);
-        pose->session.get_output_f32("labels", labels, labels_count);
-        pose->session.get_output_f32("keypoints", keypoints, keypoints_count);
+        pose->infer(input, dets, labels, keypoints);
         return 1;
     } catch (const std::exception& e) {
         set_error(e.what());
